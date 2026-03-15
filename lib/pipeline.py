@@ -331,10 +331,26 @@ def run_pipeline(
 
 def get_duration(path):
     probe = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path],
         capture_output=True, text=True
     )
-    return float(json.loads(probe.stdout)["format"]["duration"])
+    try:
+        data = json.loads(probe.stdout)
+    except (json.JSONDecodeError, ValueError):
+        print(f"[REELS] get_duration: ffprobe returned no JSON for {path}", flush=True)
+        return 60.0  # fallback
+
+    # Try format.duration first
+    if "format" in data and "duration" in data["format"]:
+        return float(data["format"]["duration"])
+
+    # Fallback: try first stream with duration
+    for stream in data.get("streams", []):
+        if "duration" in stream:
+            return float(stream["duration"])
+
+    print(f"[REELS] get_duration: no duration found for {path}, using fallback", flush=True)
+    return 60.0
 
 
 def transcribe_whisper(video_path, openai_key, workdir):
