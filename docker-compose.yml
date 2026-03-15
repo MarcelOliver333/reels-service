@@ -1,0 +1,17 @@
+services:
+  reels-service:
+    build: .
+    restart: unless-stopped
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SERVICE_SECRET=${SERVICE_SECRET}
+      - PORT=3001
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.reels.rule=Host(`reels.srv1479662.hstgr.cloud`)"
+      - "traefik.http.routers.reels.entrypoints=websecure"
+      - "traefik.http.routers.reels.tls.certresolver=letsencrypt"
+      - "traefik.http.services.reels.loadbalancer.server.port=3001"
+    tmpfs:
+      - /tmp
