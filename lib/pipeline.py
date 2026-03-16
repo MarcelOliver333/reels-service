@@ -307,10 +307,10 @@ def run_pipeline(
         file_size = os.path.getsize(final_path)
         file_size_mb = round(file_size / 1024 / 1024, 1)
         print(f"[REELS] Uploading {file_size_mb}MB to Storage...", flush=True)
-        storage_path = f"reels/{user_id}/{os.path.basename(workdir)}/REELS_FINAL.mp4"
+        storage_path = f"output/{user_id}/{os.path.basename(workdir)}/REELS_FINAL.mp4"
 
         try:
-            public_url = upload_to_storage("user-uploads", storage_path, final_path)
+            public_url = upload_to_storage("reels", storage_path, final_path)
         except Exception as upload_err:
             if "413" in str(upload_err) or "too large" in str(upload_err).lower() or "Payload" in str(upload_err):
                 # Re-encode com bitrate menor e tentar de novo
@@ -325,7 +325,7 @@ def run_pipeline(
                     final_path = smaller_path
                     file_size_mb = round(os.path.getsize(final_path) / 1024 / 1024, 1)
                     print(f"[REELS] Re-encoded: {file_size_mb}MB. Retentando upload...", flush=True)
-                    public_url = upload_to_storage("user-uploads", storage_path, final_path)
+                    public_url = upload_to_storage("reels", storage_path, final_path)
                 else:
                     raise upload_err
             else:
