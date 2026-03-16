@@ -29,7 +29,7 @@ import subprocess
 import requests
 from PIL import Image, ImageDraw, ImageFont
 from typing import Callable
-from lib.supabase_client import upload_to_storage
+from lib.supabase_client import upload_to_storage, delete_from_storage, SUPABASE_URL
 
 MUSIC_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "music", "epic_games.mp3")
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -337,6 +337,21 @@ def run_pipeline(
                 raise
 
         print(f"[REELS] Upload done: {public_url}", flush=True)
+
+        # ===== 12b. DELETE RAW UPLOAD FROM STORAGE =====
+        # If video_url is from our Storage (uploads/), delete it to save space
+        storage_prefix = f"{SUPABASE_URL}/storage/v1/object/public/reels/uploads/"
+        if video_url.startswith(storage_prefix):
+            raw_path = video_url.replace(f"{SUPABASE_URL}/storage/v1/object/public/reels/", "")
+            try:
+                deleted = delete_from_storage("reels", [raw_path])
+                if deleted:
+                    print(f"[REELS] Raw upload deleted: {raw_path}", flush=True)
+                else:
+                    print(f"[REELS] Failed to delete raw upload: {raw_path}", flush=True)
+            except Exception as e:
+                print(f"[REELS] Error deleting raw upload: {e}", flush=True)
+
         progress(100, "done")
 
         return {

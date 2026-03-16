@@ -46,6 +46,18 @@ def upload_to_storage(bucket: str, path: str, file_path_or_bytes, content_type: 
     raise Exception(f"Storage upload failed ({resp.status_code}): {resp.text[:200]}")
 
 
+def delete_from_storage(bucket: str, paths: list[str]) -> bool:
+    """Deleta arquivos do Supabase Storage. Retorna True se sucesso."""
+    url = f"{SUPABASE_URL}/storage/v1/object/{bucket}"
+    headers = {**HEADERS, "Content-Type": "application/json"}
+    try:
+        resp = requests.delete(url, headers=headers, json={"prefixes": paths})
+        return resp.status_code in (200, 204)
+    except Exception as e:
+        print(f"[SUPABASE] delete_from_storage error: {e}")
+        return False
+
+
 # ─── Jobs persistence (reels_jobs table) ───
 
 
