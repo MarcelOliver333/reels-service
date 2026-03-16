@@ -233,18 +233,40 @@ def run_pipeline(
         progress(72, "video_edited")
 
         # ===== 9b. APPLY IMAGE OVERLAYS =====
+        # Save a backup of the video before overlays (they can fail and corrupt)
+        pre_overlay_path = noCaption_path
         if overlay_data:
             progress(72, "applying_image_overlays")
-            noCaption_path = apply_image_overlays(noCaption_path, overlay_data, W, H, workdir)
-            print(f"[REELS] Image overlays applied", flush=True)
+            try:
+                import shutil
+                backup_path = os.path.join(workdir, "reels_noCaption_backup.mp4")
+                shutil.copy2(noCaption_path, backup_path)
+                noCaption_path = apply_image_overlays(noCaption_path, overlay_data, W, H, workdir)
+                # Verify the result file exists and is valid
+                if not os.path.exists(noCaption_path) or os.path.getsize(noCaption_path) < 1000:
+                    print(f"[REELS] Overlay result missing or too small, using backup", flush=True)
+                    noCaption_path = backup_path
+                else:
+                    print(f"[REELS] Image overlays applied successfully", flush=True)
+            except Exception as e:
+                print(f"[REELS] Overlay step failed ({e}), continuing without overlays", flush=True)
+                noCaption_path = backup_path if os.path.exists(backup_path) else pre_overlay_path
+
+        # Verify video file exists before continuing
+        if not os.path.exists(noCaption_path):
+            raise RuntimeError(f"Video file missing after overlay step: {noCaption_path}")
 
         # ===== 9c. BUILD SFX TRACK =====
         sfx_track_path = None
         if sfx_pop_path:
             progress(78, "building_sfx_track")
-            sfx_timestamps = collect_sfx_timestamps(segments, overlay_data, HOOK_DUR)
-            total_dur = get_duration(noCaption_path)
-            sfx_track_path = build_sfx_track(sfx_pop_path, sfx_timestamps, total_dur, workdir)
+            try:
+                sfx_timestamps = collect_sfx_timestamps(segments, overlay_data, HOOK_DUR)
+                total_dur = get_duration(noCaption_path)
+                sfx_track_path = build_sfx_track(sfx_pop_path, sfx_timestamps, total_dur, workdir)
+            except Exception as e:
+                print(f"[REELS] SFX track failed ({e}), continuing without SFX", flush=True)
+                sfx_track_path = None
 
         # ===== 10. CAPTIONS (ASS) =====
         progress(80, "generating_captions")
