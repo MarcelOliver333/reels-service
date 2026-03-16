@@ -233,6 +233,11 @@ def run_pipeline(
             nosilence_path, W, H, hook_frame_a, hook_frame_b,
             video_start_y, crop_top, segments, zoom_levels, sora_paths, workdir
         )
+
+        # Critical check: edit_video MUST produce a valid file
+        if not os.path.exists(noCaption_path) or os.path.getsize(noCaption_path) < 1000:
+            raise RuntimeError(f"edit_video failed to produce output at {noCaption_path}")
+        print(f"[REELS] edit_video OK: {os.path.getsize(noCaption_path)} bytes", flush=True)
         progress(72, "video_edited")
 
         # ===== 9b. APPLY IMAGE OVERLAYS =====
@@ -739,14 +744,13 @@ def edit_video(video_path, W, H, hook_frame_a_path, hook_frame_b_path,
     BANNER_H = int(H * 0.115)
     BANNER_Y = video_start_y - (BANNER_H // 2)
 
-    for idx, (img_path, out_path, dur) in enumerate([
+    for idx, (img_path, out_clip, dur) in enumerate([
         (hook_frame_a_path, hook_a_clip, IMG_SWITCH),
         (hook_frame_b_path, hook_b_clip, HOOK_DUR - IMG_SWITCH),
     ]):
         offset = 0 if idx == 0 else IMG_SWITCH
         # 3-layer composite: hook PNG (bg) + live video (middle) + banner crop (top)
-        # Split hook PNG: one copy for background, one to crop the banner area
-        subprocess.run([
+        result = subprocess.run([
             "ffmpeg", "-y",
             "-loop", "1", "-i", img_path, "-t", str(dur),
             "-ss", str(offset), "-i", video_path, "-t", str(dur),
@@ -759,27 +763,28 @@ def edit_video(video_path, W, H, hook_frame_a_path, hook_frame_b_path,
             "-map", "[out]", "-map", "1:a?",
             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
             "-c:a", "aac", "-b:a", "128k",
-            "-r", "30", out_path
-        ], capture_output=True)
+            "-r", "30", out_clip
+        ], capture_output=True, text=True)
+        if not os.path.exists(out_clip) or os.path.getsize(out_clip) < 100:
+            print(f"[REELS] Hook clip {idx} FAILED. stderr: {result.stderr[-300:]}", flush=True)
 
     # Concatenar hook A + hook B
     hook_path = os.path.join(workdir, "hook.mp4")
     hook_list = os.path.join(workdir, "hook_list.txt")
     with open(hook_list, "w") as f:
         f.write(f"file '{hook_a_clip}'\nfile '{hook_b_clip}'\n")
-    subprocess.run([
+    result = subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", hook_list,
         "-c", "copy", hook_path
-    ], capture_output=True)
+    ], capture_output=True, text=True)
+    if not os.path.exists(hook_path) or os.path.getsize(hook_path) < 100:
+        print(f"[REELS] Hook concat FAILED. stderr: {result.stderr[-300:]}", flush=True)
 
     # --- 2. Criar segmentos com zoom (ffmpeg) ---
     seg_paths = []
-    # Obter duração do vídeo
-    probe = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", video_path],
-        capture_output=True, text=True
-    )
-    video_duration = float(json.loads(probe.stdout)["format"]["duration"])
+    # Obter duração do vídeo (resilient)
+    video_duration = get_duration(video_path)
+    print(f"[REELS] edit_video: video_duration={video_duration}s, segments={len(segments)}", flush=True)
 
     for i, seg in enumerate(segments):
         start = seg["start"] if isinstance(seg, dict) else seg[0]
@@ -818,6 +823,8 @@ def edit_video(video_path, W, H, hook_frame_a_path, hook_frame_b_path,
 
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 0:
             seg_paths.append(seg_path)
+        else:
+            print(f"[REELS] Segment {i} FAILED (start={start}, dur={dur}, zoom={zoom})", flush=True)
 
     # --- 3. Concatenar tudo: hook + segmentos ---
     concat_list = os.path.join(workdir, "concat_list.txt")
@@ -827,52 +834,91 @@ def edit_video(video_path, W, H, hook_frame_a_path, hook_frame_b_path,
             f.write(f"file '{sp}'\n")
 
     out_path = os.path.join(workdir, "reels_noCaption.mp4")
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-c:a", "aac", "-b:a", "128k", "-r", "30",
-        out_path
-    ], capture_output=True)
+
+    # Verify we have segments to concatenate
+    if not seg_paths:
+        print("[REELS] WARNING: No segments produced, using video directly", flush=True)
+        # Fallback: just copy the video with re-encode
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", video_path,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "128k", "-r", "30",
+            out_path
+        ], capture_output=True, text=True)
+        if not os.path.exists(out_path):
+            print(f"[REELS] FFmpeg fallback stderr: {result.stderr[-500:]}", flush=True)
+            raise RuntimeError("Failed to produce video file (no segments and fallback failed)")
+    else:
+        # Verify hook exists before concat
+        if not os.path.exists(hook_path) or os.path.getsize(hook_path) < 1000:
+            print("[REELS] Hook file missing/empty, concatenating segments only", flush=True)
+            with open(concat_list, "w") as f:
+                for sp in seg_paths:
+                    f.write(f"file '{sp}'\n")
+
+        result = subprocess.run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "128k", "-r", "30",
+            out_path
+        ], capture_output=True, text=True)
+
+        if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+            print(f"[REELS] Concat failed. stderr: {result.stderr[-500:]}", flush=True)
+            print(f"[REELS] Concat list contents:", flush=True)
+            with open(concat_list, "r") as f:
+                print(f.read(), flush=True)
+            # Last resort: just re-encode the original video
+            print("[REELS] Attempting fallback: direct re-encode of source video", flush=True)
+            result2 = subprocess.run([
+                "ffmpeg", "-y", "-i", video_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-c:a", "aac", "-b:a", "128k", "-r", "30",
+                out_path
+            ], capture_output=True, text=True)
+            if not os.path.exists(out_path):
+                raise RuntimeError(f"All video editing attempts failed. stderr: {result2.stderr[-300:]}")
+
+    print(f"[REELS] Video concat done: {os.path.getsize(out_path)} bytes", flush=True)
 
     # --- 4. Sora cutaways (overlay) with Ken Burns ---
     if sora_specs:
         for si, spec in enumerate(sora_specs):
-            fpath = spec["path"]
-            insert_at = spec["insert_at"]
-            if not os.path.exists(fpath):
-                continue
-            temp_out = os.path.join(workdir, "temp_overlay.mp4")
-            sora_dur_probe = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", fpath],
-                capture_output=True, text=True
-            )
             try:
-                sora_dur = float(json.loads(sora_dur_probe.stdout)["format"]["duration"])
-            except:
-                continue
-            # Ken Burns: slow push-in 1.0→1.06x over clip duration
-            # IMPORTANT: d=1 (1 output frame per input frame). d>1 multiplies frames!
-            kb_total = int(sora_dur * 30)
-            zoom_step = 0.06 / max(kb_total, 1)
-            fade_out_st = max(sora_dur - 0.3, 0)
-            subprocess.run([
-                "ffmpeg", "-y", "-i", out_path, "-i", fpath,
-                "-filter_complex",
-                f"[1:v]scale={W}:{H},"
-                f"zoompan=z='min(1+{zoom_step:.6f}*on,1.06)'"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                f":d=1:s={W}x{H}:fps=30,"
-                f"fade=in:st=0:d=0.3:alpha=1,"
-                f"fade=out:st={fade_out_st:.2f}:d=0.3:alpha=1,"
-                f"setpts=PTS+{insert_at}/TB[ov];"
-                f"[0:v][ov]overlay=enable='between(t,{insert_at},{insert_at + sora_dur})'[out]",
-                "-map", "[out]", "-map", "0:a",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                "-c:a", "copy", "-shortest", temp_out
-            ], capture_output=True)
-            if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
-                os.replace(temp_out, out_path)
-                print(f"[REELS] Sora cutaway {si} applied with Ken Burns at {insert_at}s", flush=True)
+                fpath = spec["path"]
+                insert_at = spec["insert_at"]
+                if not os.path.exists(fpath):
+                    continue
+                temp_out = os.path.join(workdir, f"temp_sora_{si}.mp4")
+                sora_dur = get_duration(fpath)
+                if sora_dur <= 0:
+                    continue
+                # Ken Burns: slow push-in 1.0→1.06x over clip duration
+                kb_total = int(sora_dur * 30)
+                zoom_step = 0.06 / max(kb_total, 1)
+                fade_out_st = max(sora_dur - 0.3, 0)
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", out_path, "-i", fpath,
+                    "-filter_complex",
+                    f"[1:v]scale={W}:{H},"
+                    f"zoompan=z='min(1+{zoom_step:.6f}*on,1.06)'"
+                    f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                    f":d=1:s={W}x{H}:fps=30,"
+                    f"fade=in:st=0:d=0.3:alpha=1,"
+                    f"fade=out:st={fade_out_st:.2f}:d=0.3:alpha=1,"
+                    f"setpts=PTS+{insert_at}/TB[ov];"
+                    f"[0:v][ov]overlay=enable='between(t,{insert_at},{insert_at + sora_dur})'[out]",
+                    "-map", "[out]", "-map", "0:a",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-c:a", "copy", "-shortest", temp_out
+                ], capture_output=True, text=True)
+                if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
+                    os.replace(temp_out, out_path)
+                    print(f"[REELS] Sora cutaway {si} applied with Ken Burns at {insert_at}s", flush=True)
+                else:
+                    print(f"[REELS] Sora cutaway {si} failed, skipping", flush=True)
+            except Exception as e:
+                print(f"[REELS] Sora cutaway {si} error: {e}, skipping", flush=True)
 
     print(f"[REELS] Video edited: {out_path}", flush=True)
     return out_path
