@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir auto-editor
 
 COPY . .
 
+RUN mkdir -p /app/workdata
+
 EXPOSE 3001
 
 CMD ["gunicorn", "--bind", "0.0.0.0:3001", "--timeout", "600", "--workers", "1", "app:app"]

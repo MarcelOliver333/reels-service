@@ -69,7 +69,10 @@ def run_pipeline(
             progress_callback(pct, step)
         print(f"[REELS] {pct}% — {step}", flush=True)
 
-    workdir = tempfile.mkdtemp(prefix="reels_")
+    # Use /app/workdata instead of /tmp to avoid tmpfs (RAM) space issues
+    base_workdir = os.environ.get("REELS_WORKDIR", "/app/workdata")
+    os.makedirs(base_workdir, exist_ok=True)
+    workdir = tempfile.mkdtemp(prefix="reels_", dir=base_workdir)
     print(f"[REELS] Workdir: {workdir}", flush=True)
 
     try:
@@ -942,19 +945,16 @@ def apply_image_overlays(video_path, overlay_data, W, H, workdir):
                 )
                 overlay_chain = f"[ov{i}]"
             else:
-                # blur_overlay mode: blurred+darkened bg + centered card (white border + shadow)
+                # blur_overlay mode: darkened bg + centered card (white border)
                 img_w = int(W * 0.75)
                 border = 6
                 card_w = img_w + border * 2
                 card_x = (W - card_w) // 2
-                shadow_x = card_x + 4
+                # Simplified filter: use drawbox for dark overlay instead of gblur+eq (more compatible)
                 filter_parts.append(
                     f"[{inp_idx}:v]scale={img_w}:-1,setsar=1,"
                     f"pad={card_w}:ih+{border*2}:{border}:{border}:white[card{i}];"
-                    f"{overlay_chain}split[base{i}][blur_src{i}];"
-                    f"[blur_src{i}]gblur=sigma=25,eq=brightness=-0.6:saturation=0.8:"
-                    f"enable='between(t,{t_start},{t_end})'[blurred{i}];"
-                    f"[base{i}][blurred{i}]overlay=0:0:"
+                    f"{overlay_chain}drawbox=x=0:y=0:w={W}:h={H}:color=black@0.6:t=fill:"
                     f"enable='between(t,{t_start},{t_end})'[bg{i}];"
                     f"[bg{i}][card{i}]overlay={card_x}:(main_h-overlay_h)/2:"
                     f"enable='between(t,{t_start},{t_end})'[ov{i}]"
